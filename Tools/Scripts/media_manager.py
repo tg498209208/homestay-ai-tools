@@ -47,14 +47,23 @@ SUPPORTED_VID = {".mp4", ".mov", ".avi", ".m4v"}
 
 # ==============================
 # Claude 客户端（懒加载，避免 import 时崩溃）
+# 视觉识别需要真正的 Claude 模型，优先走 LiteLLM 本地代理（localhost:4000）
 # ==============================
 
 _claude_client: Optional[anthropic.Anthropic] = None
+LITELLM_URL = "http://localhost:4000"   # 支持视觉的本地代理
 
 def get_claude() -> anthropic.Anthropic:
     global _claude_client
     if _claude_client is None:
-        _claude_client = anthropic.Anthropic()
+        import os, urllib.request
+        # 检查 LiteLLM 代理是否在线；若是，优先使用（支持视觉识别）
+        try:
+            urllib.request.urlopen(f"{LITELLM_URL}/health", timeout=2)
+            _claude_client = anthropic.Anthropic(base_url=LITELLM_URL)
+        except Exception:
+            # 代理不在线，回退到 ANTHROPIC_BASE_URL（可能不支持视觉）
+            _claude_client = anthropic.Anthropic()
     return _claude_client
 
 

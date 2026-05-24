@@ -15,6 +15,19 @@ venv/
 # Generated output (保留目录结构，忽略生成文件)
 Output/Generated/*.md
 
+# 图片素材（体积大，不纳入 Git；用本地备份或对象存储管理）
+Assets/Raw_Materials/*
+Assets/Images/**/*.jpg
+Assets/Images/**/*.JPG
+Assets/Images/**/*.jpeg
+Assets/Images/**/*.png
+Assets/Images/**/*.PNG
+Assets/Images/**/*.heic
+Assets/Images/**/*.HEIC
+Assets/Images/**/*.webp
+Assets/Images/**/*.bmp
+Output/Enhanced/
+
 # Secrets
 .env
 .env.local
