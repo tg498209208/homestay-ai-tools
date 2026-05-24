@@ -12,13 +12,11 @@
 用法：python3 Tools/Scripts/media_manager.py [--dry-run] [--skip-ai] [--only-enhance]
 """
 
-import os
-import re
-import sys
 import shutil
 import base64
 import argparse
-import datetime
+import time
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -37,7 +35,7 @@ OUTPUT_DIR    = PROJECT_ROOT / "Output" / "Enhanced"
 # 分类目标目录（文件夹名 → 路径）
 CATEGORY_DIRS = {
     "窑烤面包": IMAGES_DIR / "窑烤面包",
-    "湖景房":   IMAGES_DIR / "湖景房",
+    "客房景观": IMAGES_DIR / "客房景观",
     "草坪婚礼": IMAGES_DIR / "草坪婚礼",
     "围炉煮茶": IMAGES_DIR / "围炉煮茶",
     "湖畔落日": IMAGES_DIR / "湖畔落日",
@@ -48,10 +46,16 @@ SUPPORTED_IMG = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".heic"}
 SUPPORTED_VID = {".mp4", ".mov", ".avi", ".m4v"}
 
 # ==============================
-# Claude 客户端
+# Claude 客户端（懒加载，避免 import 时崩溃）
 # ==============================
 
-claude = anthropic.Anthropic()
+_claude_client: Optional[anthropic.Anthropic] = None
+
+def get_claude() -> anthropic.Anthropic:
+    global _claude_client
+    if _claude_client is None:
+        _claude_client = anthropic.Anthropic()
+    return _claude_client
 
 
 # ==============================
@@ -97,19 +101,19 @@ class AIClassifier:
     # 文件名关键词 → 分类（降级用）
     FILENAME_RULES = {
         "窑烤面包": ["面包", "bread", "窑", "烘焙", "欧包", "肉桂", "佛卡夏"],
-        "湖景房":   ["客房", "room", "湖景", "大床", "落地窗", "室内", "床"],
+        "客房景观": ["客房", "room", "湖景", "大床", "落地窗", "室内", "床"],
         "草坪婚礼": ["婚礼", "wedding", "草坪", "婚纱", "仪式", "花艺"],
         "围炉煮茶": ["围炉", "煮茶", "炭火", "炉", "茶", "烤红薯"],
         "湖畔落日": ["湖", "lake", "日落", "sunset", "栈道", "水", "风景"],
     }
 
     SYSTEM_PROMPT = """你是伴山栖湖民宿的图片分类助手。
-民宿业务分为5类场景：窑烤面包、湖景房、草坪婚礼、围炉煮茶、湖畔落日。
+民宿业务分为5类场景：窑烤面包、客房景观、草坪婚礼、围炉煮茶、湖畔落日。
 如果图片不属于以上任何一类，返回"其他"。
 只返回分类名称，不要任何解释。"""
 
     def classify_by_ai(self, image_path: Path) -> str:
-        """调用 Claude 视觉识别图片场景"""
+        """调用 Claude 视觉识别图片场景（含重试 + 指数退避）"""
         try:
             # HEIC 格式先转换
             img_bytes, mime = self._load_image_bytes(image_path)
@@ -118,25 +122,41 @@ class AIClassifier:
 
             b64 = base64.standard_b64encode(img_bytes).decode("utf-8")
 
-            message = claude.messages.create(
-                model="claude-opus-4-5",
-                max_tokens=20,
-                system=self.SYSTEM_PROMPT,
-                messages=[{
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image",
-                            "source": {
-                                "type": "base64",
-                                "media_type": mime,
-                                "data": b64,
-                            },
-                        },
-                        {"type": "text", "text": "这张图片属于哪个场景？"},
-                    ],
-                }],
-            )
+            # API 调用 + 自动重试（最多 3 次，指数退避）
+            message = None
+            last_err = None
+            for attempt in range(3):
+                try:
+                    message = get_claude().messages.create(
+                        model="claude-haiku-4-5",   # haiku 速度更快、成本更低
+                        max_tokens=20,
+                        system=self.SYSTEM_PROMPT,
+                        messages=[{
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "image",
+                                    "source": {
+                                        "type": "base64",
+                                        "media_type": mime,
+                                        "data": b64,
+                                    },
+                                },
+                                {"type": "text", "text": "这张图片属于哪个场景？"},
+                            ],
+                        }],
+                    )
+                    break
+                except Exception as e:
+                    last_err = e
+                    wait = 2 ** attempt
+                    print(f"    ⚠️  AI 第{attempt+1}次失败（{e.__class__.__name__}），{wait}s 后重试…")
+                    time.sleep(wait)
+
+            if message is None:
+                print(f"    ⚠️  AI 识别连续失败，降级用文件名匹配")
+                return self.classify_by_filename(image_path.stem)
+
             result = next(
                 (b.text.strip() for b in message.content if hasattr(b, "text")),
                 ""
@@ -305,12 +325,12 @@ class FileSorter:
         dest_dir  = CATEGORY_DIRS.get(category, CATEGORY_DIRS["其他"])
         dest_path = dest_dir / image_path.name
 
-        # 文件名冲突处理
+        # 文件名冲突处理（用 uuid 短串确保唯一，避免秒级时间戳碰撞）
         if dest_path.exists():
             stem = image_path.stem
             suffix = image_path.suffix
-            ts = datetime.datetime.now().strftime("%H%M%S")
-            dest_path = dest_dir / f"{stem}_{ts}{suffix}"
+            uid = uuid.uuid4().hex[:6]
+            dest_path = dest_dir / f"{stem}_{uid}{suffix}"
 
         if not self.dry_run:
             shutil.copy2(image_path, dest_path)

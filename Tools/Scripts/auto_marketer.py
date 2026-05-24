@@ -9,9 +9,8 @@
 当前版本：v0.2.0 — 接入 Claude AI 生成完整文案
 """
 
-import os
 import json
-import random
+import time
 import datetime
 from pathlib import Path
 from dataclasses import dataclass, field
@@ -30,10 +29,16 @@ TEMPLATES_FILE = DOCS_MARKETING / "Xiaohongshu_Templates.md"
 OUTPUT_DIR = PROJECT_ROOT / "Output" / "Generated"
 
 # ==============================
-# Claude 客户端
+# Claude 客户端（懒加载，避免 import 时崩溃）
 # ==============================
 
-claude = anthropic.Anthropic()  # 自动读取环境变量 ANTHROPIC_API_KEY
+_claude_client: Optional[anthropic.Anthropic] = None
+
+def get_claude() -> anthropic.Anthropic:
+    global _claude_client
+    if _claude_client is None:
+        _claude_client = anthropic.Anthropic()
+    return _claude_client
 
 # ==============================
 # 场景配置
@@ -220,7 +225,7 @@ class ClaudeContentEngine:
     """
 
     def __init__(self):
-        self.client = claude
+        self.client = get_claude()
 
     def _load_reference_template(self, scene_id: str) -> str:
         """从 Xiaohongshu_Templates.md 加载参考模板文本"""
@@ -233,7 +238,7 @@ class ClaudeContentEngine:
         for section in sections:
             if scene_name in section or (scene_id == "kiln_bread" and "窑烤面包" in section):
                 return "## " + section[:1500]  # 取前1500字符作参考
-        return sections[1] if len(sections) > 1 else ""  # 默认取第一个模板
+        return ("## " + sections[1]) if len(sections) > 1 else ""  # 安全兜底
 
     def generate(
         self,
@@ -291,11 +296,24 @@ class ClaudeContentEngine:
 
         print(f"  🤖 Claude 正在生成「{config['name']}」文案…")
 
-        message = self.client.messages.create(
-            model="claude-opus-4-5",
-            max_tokens=1024,
-            messages=[{"role": "user", "content": prompt}],
-        )
+        # API 调用 + 自动重试（最多3次，指数退避）
+        last_err = None
+        for attempt in range(3):
+            try:
+                message = self.client.messages.create(
+                    model="claude-opus-4-5",
+                    max_tokens=1024,
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                break
+            except Exception as e:
+                last_err = e
+                wait = 2 ** attempt
+                print(f"  ⚠️  API 第{attempt+1}次失败（{e.__class__.__name__}），{wait}s 后重试…")
+                time.sleep(wait)
+        else:
+            print(f"  ❌ API 连续失败，跳过此场景：{last_err}")
+            return "", ""
 
         # 跳过 ThinkingBlock，找到第一个 TextBlock
         raw = next(
@@ -303,22 +321,31 @@ class ClaudeContentEngine:
             ""
         ).strip()
 
-        # 解析 JSON 输出
+        # 解析 JSON 输出（多层容错）
+        # 1. 去掉 markdown 代码块包裹
+        if "```" in raw:
+            parts = raw.split("```")
+            for part in parts:
+                cleaned = part.strip()
+                if cleaned.startswith("json"):
+                    cleaned = cleaned[4:].strip()
+                if cleaned.startswith("{"):
+                    raw = cleaned
+                    break
         try:
-            # 去掉可能的 markdown 代码块
-            if raw.startswith("```"):
-                raw = raw.split("```")[1]
-                if raw.startswith("json"):
-                    raw = raw[4:]
             data = json.loads(raw.strip())
             return data.get("title", ""), data.get("body", "")
         except json.JSONDecodeError:
-            # 容错：直接返回原文
-            print("  ⚠️  JSON 解析失败，返回原始输出")
-            lines = raw.split("\n")
-            title = lines[0].strip().lstrip('"').rstrip('"') if lines else ""
-            body = "\n".join(lines[1:]).strip()
-            return title, body
+            # 2. 尝试用正则提取 title / body 字段
+            import re
+            title_m = re.search(r'"title"\s*:\s*"([^"]+)"', raw)
+            body_m  = re.search(r'"body"\s*:\s*"([\s\S]+?)"\s*[,}]', raw)
+            if title_m and body_m:
+                return title_m.group(1), body_m.group(1).replace("\\n", "\n")
+            # 3. 最终兜底：原文当正文
+            print("  ⚠️  JSON 解析失败，以原文作正文")
+            lines = [l for l in raw.split("\n") if l.strip()]
+            return lines[0] if lines else "伴山栖湖", "\n".join(lines[1:]) if len(lines) > 1 else raw
 
 
 # ==============================
