@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+
+# Generated output (保留目录结构，忽略生成文件)
+Output/Generated/*.md
+
+# Secrets
+.env
+.env.local
