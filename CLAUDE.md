@@ -19,7 +19,7 @@
 | 🌿 湖畔景观 | 湖边栈道、日落打卡点 |
 
 **官网仓库**：`~/民宿展示/`（纯静态 HTML + 实景图片）
-**本仓库**：`~/development/homestay-ai-tools/`（AI 自动化工具）
+**本仓库**：`~/Desktop/homestay-ai-tools/`（AI 自动化工具）
 
 ---
 
