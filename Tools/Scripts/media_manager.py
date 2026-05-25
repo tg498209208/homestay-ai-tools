@@ -137,7 +137,7 @@ class AIClassifier:
             for attempt in range(3):
                 try:
                     message = get_claude().messages.create(
-                        model="claude-haiku-4-5",   # haiku 速度更快、成本更低
+                        model="claude-sonnet-4-5",  # sonnet 识别准确率更高
                         max_tokens=20,
                         system=self.SYSTEM_PROMPT,
                         messages=[{
